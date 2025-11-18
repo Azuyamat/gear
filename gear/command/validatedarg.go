@@ -1,4 +1,4 @@
-package gear
+package command
 
 import "fmt"
 
@@ -11,6 +11,10 @@ func newValidatedArgs() *ValidatedArgs {
 	return &ValidatedArgs{
 		args: make(map[string]validatedArg),
 	}
+}
+
+func (v *ValidatedArgs) set(name string, value validatedArg) {
+	v.args[name] = value
 }
 
 func (v *ValidatedArgs) Get(name string) validatedArg {

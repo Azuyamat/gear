@@ -1,4 +1,4 @@
-package gear
+package command
 
 import (
 	stdcontext "context"
@@ -101,7 +101,7 @@ func (c *executableCommand) parseAndValidateArgs(args []string) (*ValidatedArgs,
 			return nil, fmt.Errorf("validation failed for argument '%s': %v", arg.Label(), err)
 		}
 
-		validatedArgs.args[arg.Label()] = parsedValue
+		validatedArgs.set(arg.Label(), parsedValue)
 	}
 	return validatedArgs, nil
 }

@@ -1,4 +1,4 @@
-package gear
+package command
 
 type baseCommand struct {
 	label       string

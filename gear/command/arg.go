@@ -1,4 +1,4 @@
-package gear
+package command
 
 import "fmt"
 
