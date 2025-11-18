@@ -1,20 +1,20 @@
-package gear
+package command
 
-type BaseCommand struct {
+type baseCommand struct {
 	label       string
 	description string
 }
 
-func (c *BaseCommand) Label() string {
+func (c *baseCommand) Label() string {
 	return c.label
 }
 
-func (c *BaseCommand) Description() string {
+func (c *baseCommand) Description() string {
 	return c.description
 }
 
-func NewBaseCommand(label string, description string) *BaseCommand {
-	return &BaseCommand{
+func newBaseCommand(label, description string) *baseCommand {
+	return &baseCommand{
 		label:       label,
 		description: description,
 	}
