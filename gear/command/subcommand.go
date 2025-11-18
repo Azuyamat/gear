@@ -7,7 +7,8 @@ import (
 type Subcommand struct {
 	*baseCommand
 
-	children map[string]Command
+	children    map[string]Command
+	globalFlags []Flag
 }
 
 func NewSubcommand(label, description string) *Subcommand {
@@ -34,10 +35,15 @@ func (c *Subcommand) run(args []string) error {
 		return fmt.Errorf("unknown subcommand: %s", commandName)
 	}
 
+	childCommand.inheritGlobalFlags(c.globalFlags)
 	return childCommand.run(args[1:])
 }
 
 func (c *Subcommand) PrintHelp() {
 	printer := newHelpPrinter()
 	printer.PrintSubcommandHelp(c)
+}
+
+func (c *Subcommand) inheritGlobalFlags(flags []Flag) {
+	c.globalFlags = append(c.globalFlags, flags...)
 }

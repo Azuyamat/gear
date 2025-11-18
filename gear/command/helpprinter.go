@@ -38,6 +38,27 @@ func (h *helpPrinter) PrintExecutableCommandHelp(cmd *executableCommand) {
 	fmt.Fprintf(h.writer, "Command: %s\n", cmd.Label())
 	fmt.Fprintf(h.writer, "%s\n\n", cmd.Description())
 
+	if len(cmd.flags) > 0 {
+		fmt.Fprintf(h.writer, "Flags:\n")
+		for _, flag := range cmd.flags {
+			shorthandDisplay := ""
+			if flag.Shorthand() != "" {
+				shorthandDisplay = fmt.Sprintf(", -%s", flag.Shorthand())
+			}
+			defaultDisplay := ""
+			if flag.DefaultValue() != nil {
+				defaultDisplay = fmt.Sprintf(" (default: %v)", flag.DefaultValue())
+			}
+			fmt.Fprintf(h.writer, "  --%s%s (%s)%s\n      %s\n",
+				flag.Name(),
+				shorthandDisplay,
+				flag.Expected(),
+				defaultDisplay,
+				flag.Description())
+		}
+		fmt.Fprintf(h.writer, "\n")
+	}
+
 	if len(cmd.args) > 0 {
 		fmt.Fprintf(h.writer, "Arguments:\n")
 		for _, arg := range cmd.args {
