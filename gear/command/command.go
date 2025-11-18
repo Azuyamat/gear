@@ -5,4 +5,5 @@ type Command interface {
 	Description() string
 	run(args []string) error
 	PrintHelp()
+	inheritGlobalFlags(flags []Flag)
 }

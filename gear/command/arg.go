@@ -1,42 +1,43 @@
 package command
 
-import "fmt"
-
-type ArgType string
-type argValidator func(value interface{}) error
-
-const (
-	ArgTypeString ArgType = "string"
-	ArgTypeInt    ArgType = "int"
-	ArgTypeFloat  ArgType = "float"
-	ArgTypeBool   ArgType = "bool"
-)
+type Arg interface {
+	Label() string
+	Description() string
+	Expected() ValueType
+	IsOptional() bool
+	validate(value interface{}) error
+	toArg() arg
+}
 
 type arg struct {
 	label       string
 	description string
-	expected    ArgType
-	validators  []argValidator
+	expected    ValueType
+	validators  []validator
 	optional    bool
 }
 
-func (a *arg) Label() string {
+func (a arg) Label() string {
 	return a.label
 }
 
-func (a *arg) Description() string {
+func (a arg) Description() string {
 	return a.description
 }
 
-func (a *arg) Expected() ArgType {
+func (a arg) Expected() ValueType {
 	return a.expected
 }
 
-func (a *arg) IsOptional() bool {
+func (a arg) IsOptional() bool {
 	return a.optional
 }
 
-func NewArg(label string, description string, expected ArgType, validators ...argValidator) arg {
+func (a arg) toArg() arg {
+	return a
+}
+
+func NewArg(label string, description string, expected ValueType, validators ...validator) arg {
 	return arg{
 		label:       label,
 		description: description,
@@ -50,56 +51,55 @@ func (a arg) AsOptional() arg {
 	return a
 }
 
-func NewStringArg(label string, description string) arg {
-	return NewArg(label, description, ArgTypeString, func(value interface{}) error {
-		_, ok := value.(string)
-		if !ok {
-			return fmt.Errorf("expected string, got %T", value)
-		}
-		return nil
-	})
-}
-
-func NewIntArg(label string, description string) arg {
-	return NewArg(label, description, ArgTypeInt, func(value interface{}) error {
-		_, ok := value.(int)
-		if !ok {
-			return fmt.Errorf("expected int, got %T", value)
-		}
-		return nil
-	})
-}
-
-func NewFloatArg(label string, description string) arg {
-	return NewArg(label, description, ArgTypeFloat, func(value interface{}) error {
-		_, ok := value.(float64)
-		if !ok {
-			return fmt.Errorf("expected float, got %T", value)
-		}
-		return nil
-	})
-}
-
-func NewBoolArg(label string, description string) arg {
-	return NewArg(label, description, ArgTypeBool, func(value interface{}) error {
-		_, ok := value.(bool)
-		if !ok {
-			return fmt.Errorf("expected bool, got %T", value)
-		}
-		return nil
-	})
-}
-
-func (a arg) ExtendValidators(validators ...argValidator) arg {
+func (a arg) ExtendValidators(validators ...validator) arg {
 	a.validators = append(a.validators, validators...)
 	return a
 }
 
-func (a arg) validate(value interface{}) error {
-	for _, validator := range a.validators {
-		if err := validator(value); err != nil {
-			return err
-		}
+type typedArg[T any] struct {
+	arg
+}
+
+func (a typedArg[T]) ExtendValidators(validators ...func(T) error) typedArg[T] {
+	for _, v := range validators {
+		a.arg.validators = append(a.arg.validators, toValidator(v))
 	}
-	return nil
+	return a
+}
+
+func (a typedArg[T]) AsOptional() typedArg[T] {
+	a.arg.optional = true
+	return a
+}
+
+func (a typedArg[T]) toArg() arg {
+	return a.arg
+}
+
+func NewStringArg(label string, description string) typedArg[string] {
+	return typedArg[string]{
+		arg: NewArg(label, description, ValueTypeString, validateString),
+	}
+}
+
+func NewIntArg(label string, description string) typedArg[int] {
+	return typedArg[int]{
+		arg: NewArg(label, description, ValueTypeInt, validateInt),
+	}
+}
+
+func NewFloatArg(label string, description string) typedArg[float64] {
+	return typedArg[float64]{
+		arg: NewArg(label, description, ValueTypeFloat, validateFloat),
+	}
+}
+
+func NewBoolArg(label string, description string) typedArg[bool] {
+	return typedArg[bool]{
+		arg: NewArg(label, description, ValueTypeBool, validateBool),
+	}
+}
+
+func (a arg) validate(value interface{}) error {
+	return runValidators(a.validators, value)
 }

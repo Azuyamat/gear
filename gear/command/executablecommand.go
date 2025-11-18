@@ -3,14 +3,15 @@ package command
 import (
 	stdcontext "context"
 	"fmt"
-	"strconv"
 )
 
 type executableCommand struct {
 	*baseCommand
 
-	handler handler
-	args    []arg
+	handler            handler
+	args               []Arg
+	flags              []Flag
+	cachedValidatedArgs *ValidatedArgs
 }
 
 var defaultExecutableCommandHandler = func(ctx *Context, args ValidatedArgs) error {
@@ -21,7 +22,8 @@ func NewExecutableCommand(label, description string) *executableCommand {
 	return &executableCommand{
 		baseCommand: newBaseCommand(label, description),
 		handler:     defaultExecutableCommandHandler,
-		args:        []arg{},
+		args:        []Arg{},
+		flags:       []Flag{},
 	}
 }
 
@@ -30,8 +32,13 @@ func (c *executableCommand) Handler(handler handler) *executableCommand {
 	return c
 }
 
-func (c *executableCommand) Args(args ...arg) *executableCommand {
+func (c *executableCommand) Args(args ...Arg) *executableCommand {
 	c.args = args
+	return c
+}
+
+func (c *executableCommand) Flags(flags ...Flag) *executableCommand {
+	c.flags = flags
 	return c
 }
 
@@ -41,26 +48,147 @@ func (c *executableCommand) execute(ctx *Context, args ValidatedArgs) error {
 
 func (c *executableCommand) run(args []string) error {
 	ctx := newContext(stdcontext.Background(), c)
-	validatedArgs, err := c.parseAndValidateArgs(args)
+	positionalArgs, err := c.separateFlagsFromArgs(args)
+	if err != nil {
+		return err
+	}
+	validatedArgs, err := c.parseAndValidateArgs(positionalArgs)
 	if err != nil {
 		return err
 	}
 	return c.execute(ctx, *validatedArgs)
 }
 
-func parseArgValue(value string, expectedType ArgType) (interface{}, error) {
-	switch expectedType {
-	case ArgTypeString:
-		return value, nil
-	case ArgTypeInt:
-		return strconv.Atoi(value)
-	case ArgTypeFloat:
-		return strconv.ParseFloat(value, 64)
-	case ArgTypeBool:
-		return strconv.ParseBool(value)
-	default:
-		return nil, fmt.Errorf("unsupported argument type: %s", expectedType)
+
+type flagMaps struct {
+	byName      map[string]Flag
+	byShorthand map[string]Flag
+}
+
+func (c *executableCommand) buildFlagMaps() flagMaps {
+	flagMap := make(map[string]Flag)
+	shorthandMap := make(map[string]Flag)
+
+	for i := range c.flags {
+		f := c.flags[i]
+		flagMap[f.Name()] = f
+		if f.Shorthand() != "" {
+			shorthandMap[f.Shorthand()] = f
+		}
 	}
+
+	return flagMaps{byName: flagMap, byShorthand: shorthandMap}
+}
+
+func (c *executableCommand) setDefaultFlagValues(validatedArgs *ValidatedArgs) {
+	for _, f := range c.flags {
+		if f.DefaultValue() != nil {
+			validatedArgs.setFlag(f.Name(), f.DefaultValue())
+		}
+	}
+}
+
+func splitFlagNameValue(flagStr string) (name string, value string, hasValue bool) {
+	for i, ch := range flagStr {
+		if ch == '=' {
+			return flagStr[:i], flagStr[i+1:], true
+		}
+	}
+	return flagStr, "", false
+}
+
+func (c *executableCommand) parseSingleFlag(f Flag, value string, hasExplicitValue bool, args []string, currentIndex int) (parsedValue interface{}, newIndex int, err error) {
+	flagValue := value
+	nextIndex := currentIndex
+
+	if f.Expected() == ValueTypeBool && !hasExplicitValue {
+		flagValue = ""
+	} else if !hasExplicitValue {
+		if currentIndex+1 >= len(args) {
+			return nil, currentIndex, fmt.Errorf("flag --%s requires a value", f.Name())
+		}
+		nextIndex++
+		flagValue = args[nextIndex]
+	}
+
+	parsedValue, err = parseValue(flagValue, f.Expected())
+	if err != nil {
+		return nil, currentIndex, fmt.Errorf("invalid value for flag '%s': %v", f.Name(), err)
+	}
+
+	if err := f.validate(parsedValue); err != nil {
+		return nil, currentIndex, fmt.Errorf("validation failed for flag '%s': %v", f.Name(), err)
+	}
+
+	return parsedValue, nextIndex, nil
+}
+
+func (c *executableCommand) separateFlagsFromArgs(args []string) ([]string, error) {
+	validatedArgs := newValidatedArgs()
+	positionalArgs := []string{}
+
+	maps := c.buildFlagMaps()
+	c.setDefaultFlagValues(validatedArgs)
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+
+		if arg == "--" {
+			positionalArgs = append(positionalArgs, args[i+1:]...)
+			break
+		}
+
+		if len(arg) > 2 && arg[0:2] == "--" {
+			flagName, flagValue, hasValue := splitFlagNameValue(arg[2:])
+
+			if flagName == "help" {
+				c.PrintHelp()
+				return nil, fmt.Errorf("")
+			}
+
+			f, ok := maps.byName[flagName]
+			if !ok {
+				return nil, fmt.Errorf("unknown flag: --%s", flagName)
+			}
+
+			parsedValue, newIndex, err := c.parseSingleFlag(f, flagValue, hasValue, args, i)
+			if err != nil {
+				return nil, err
+			}
+
+			validatedArgs.setFlag(f.Name(), parsedValue)
+			i = newIndex
+			continue
+		}
+
+		if len(arg) > 1 && arg[0] == '-' && arg[1] != '-' {
+			shorthand, flagValue, hasValue := splitFlagNameValue(arg[1:])
+
+			if shorthand == "h" {
+				c.PrintHelp()
+				return nil, fmt.Errorf("")
+			}
+
+			f, ok := maps.byShorthand[shorthand]
+			if !ok {
+				return nil, fmt.Errorf("unknown flag: -%s", shorthand)
+			}
+
+			parsedValue, newIndex, err := c.parseSingleFlag(f, flagValue, hasValue, args, i)
+			if err != nil {
+				return nil, err
+			}
+
+			validatedArgs.setFlag(f.Name(), parsedValue)
+			i = newIndex
+			continue
+		}
+
+		positionalArgs = append(positionalArgs, arg)
+	}
+
+	c.cachedValidatedArgs = validatedArgs
+	return positionalArgs, nil
 }
 
 func (c *executableCommand) parseAndValidateArgs(args []string) (*ValidatedArgs, error) {
@@ -81,7 +209,11 @@ func (c *executableCommand) parseAndValidateArgs(args []string) (*ValidatedArgs,
 		return nil, fmt.Errorf("too many arguments for command: %s", c.Label())
 	}
 
-	validatedArgs := newValidatedArgs()
+	validatedArgs := c.cachedValidatedArgs
+	if validatedArgs == nil {
+		validatedArgs = newValidatedArgs()
+	}
+
 	for i, arg := range c.args {
 		if i >= len(args) {
 			if !arg.IsOptional() {
@@ -91,7 +223,7 @@ func (c *executableCommand) parseAndValidateArgs(args []string) (*ValidatedArgs,
 		}
 
 		rawValue := args[i]
-		parsedValue, err := parseArgValue(rawValue, arg.Expected())
+		parsedValue, err := parseValue(rawValue, arg.Expected())
 
 		if err != nil {
 			return nil, fmt.Errorf("invalid value for argument '%s': %v", arg.Label(), err)
@@ -109,4 +241,8 @@ func (c *executableCommand) parseAndValidateArgs(args []string) (*ValidatedArgs,
 func (c *executableCommand) PrintHelp() {
 	printer := newHelpPrinter()
 	printer.PrintExecutableCommandHelp(c)
+}
+
+func (c *executableCommand) inheritGlobalFlags(flags []Flag) {
+	c.flags = append(c.flags, flags...)
 }
