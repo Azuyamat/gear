@@ -5,6 +5,7 @@ type Arg interface {
 	Description() string
 	Expected() ValueType
 	IsOptional() bool
+	IsVariadic() bool
 	validate(value interface{}) error
 	toArg() arg
 }
@@ -15,6 +16,7 @@ type arg struct {
 	expected    ValueType
 	validators  []validator
 	optional    bool
+	variadic    bool
 }
 
 func (a arg) Label() string {
@@ -33,6 +35,10 @@ func (a arg) IsOptional() bool {
 	return a.optional
 }
 
+func (a arg) IsVariadic() bool {
+	return a.variadic
+}
+
 func (a arg) toArg() arg {
 	return a
 }
@@ -48,6 +54,11 @@ func NewArg(label string, description string, expected ValueType, validators ...
 
 func (a arg) AsOptional() arg {
 	a.optional = true
+	return a
+}
+
+func (a arg) AsVariadic() arg {
+	a.variadic = true
 	return a
 }
 
@@ -69,6 +80,11 @@ func (a typedArg[T]) ExtendValidators(validators ...func(T) error) typedArg[T] {
 
 func (a typedArg[T]) AsOptional() typedArg[T] {
 	a.arg.optional = true
+	return a
+}
+
+func (a typedArg[T]) AsVariadic() typedArg[T] {
+	a.arg.variadic = true
 	return a
 }
 

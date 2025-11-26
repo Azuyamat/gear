@@ -3,15 +3,17 @@ package command
 import "fmt"
 
 type ValidatedArgs struct {
-	args  map[string]validatedArg
-	flags map[string]validatedArg
+	args     map[string]validatedArg
+	flags    map[string]validatedArg
+	variadic map[string][]interface{}
 }
 type validatedArg interface{}
 
 func newValidatedArgs() *ValidatedArgs {
 	return &ValidatedArgs{
-		args:  make(map[string]validatedArg),
-		flags: make(map[string]validatedArg),
+		args:     make(map[string]validatedArg),
+		flags:    make(map[string]validatedArg),
+		variadic: make(map[string][]interface{}),
 	}
 }
 
@@ -21,6 +23,10 @@ func (v *ValidatedArgs) set(name string, value validatedArg) {
 
 func (v *ValidatedArgs) setFlag(name string, value validatedArg) {
 	v.flags[name] = value
+}
+
+func (v *ValidatedArgs) setVariadic(name string, values []interface{}) {
+	v.variadic[name] = values
 }
 
 func (v *ValidatedArgs) Get(name string) validatedArg {
@@ -175,4 +181,97 @@ func (v *ValidatedArgs) GetFlagBool(name string) (bool, error) {
 		return false, fmt.Errorf("flag %s is not a bool", name)
 	}
 	return b, nil
+}
+
+func (v *ValidatedArgs) GetVariadic(name string) []interface{} {
+	return v.variadic[name]
+}
+
+func (v *ValidatedArgs) HasVariadic(name string) bool {
+	_, ok := v.variadic[name]
+	return ok
+}
+
+func (v *ValidatedArgs) GetVariadicStrings(name string) ([]string, error) {
+	values, ok := v.variadic[name]
+	if !ok {
+		return nil, fmt.Errorf("variadic argument %s not found", name)
+	}
+	result := make([]string, len(values))
+	for i, val := range values {
+		str, ok := val.(string)
+		if !ok {
+			return nil, fmt.Errorf("variadic argument %s at position %d is not a string", name, i)
+		}
+		result[i] = str
+	}
+	return result, nil
+}
+
+func (v *ValidatedArgs) VariadicStrings(name string) []string {
+	strs, _ := v.GetVariadicStrings(name)
+	return strs
+}
+
+func (v *ValidatedArgs) GetVariadicInts(name string) ([]int, error) {
+	values, ok := v.variadic[name]
+	if !ok {
+		return nil, fmt.Errorf("variadic argument %s not found", name)
+	}
+	result := make([]int, len(values))
+	for i, val := range values {
+		num, ok := val.(int)
+		if !ok {
+			return nil, fmt.Errorf("variadic argument %s at position %d is not an int", name, i)
+		}
+		result[i] = num
+	}
+	return result, nil
+}
+
+func (v *ValidatedArgs) VariadicInts(name string) []int {
+	ints, _ := v.GetVariadicInts(name)
+	return ints
+}
+
+func (v *ValidatedArgs) GetVariadicFloats(name string) ([]float64, error) {
+	values, ok := v.variadic[name]
+	if !ok {
+		return nil, fmt.Errorf("variadic argument %s not found", name)
+	}
+	result := make([]float64, len(values))
+	for i, val := range values {
+		num, ok := val.(float64)
+		if !ok {
+			return nil, fmt.Errorf("variadic argument %s at position %d is not a float", name, i)
+		}
+		result[i] = num
+	}
+	return result, nil
+}
+
+func (v *ValidatedArgs) VariadicFloats(name string) []float64 {
+	floats, _ := v.GetVariadicFloats(name)
+	return floats
+}
+
+func (v *ValidatedArgs) GetVariadicBools(name string) ([]bool, error) {
+	values, ok := v.variadic[name]
+	if !ok {
+		return nil, fmt.Errorf("variadic argument %s not found", name)
+	}
+	result := make([]bool, len(values))
+	for i, val := range values {
+		b, ok := val.(bool)
+		if !ok {
+			return nil, fmt.Errorf("variadic argument %s at position %d is not a bool", name, i)
+		}
+		result[i] = b
+	}
+	return result, nil
+}
+
+func (v *ValidatedArgs) VariadicBools(name string) []bool {
+	bools, _ := v.GetVariadicBools(name)
+	return bools
 }

@@ -193,9 +193,19 @@ func (c *executableCommand) separateFlagsFromArgs(args []string) ([]string, erro
 
 func (c *executableCommand) parseAndValidateArgs(args []string) (*ValidatedArgs, error) {
 	requiredCount := 0
-	for _, arg := range c.args {
+	variadicIndex := -1
+	for i, arg := range c.args {
 		if !arg.IsOptional() {
 			requiredCount++
+		}
+		if arg.IsVariadic() {
+			if variadicIndex != -1 {
+				return nil, fmt.Errorf("multiple variadic arguments not allowed")
+			}
+			if i != len(c.args)-1 {
+				return nil, fmt.Errorf("variadic argument must be the last argument")
+			}
+			variadicIndex = i
 		}
 	}
 
@@ -204,7 +214,7 @@ func (c *executableCommand) parseAndValidateArgs(args []string) (*ValidatedArgs,
 		return nil, fmt.Errorf("not enough arguments for command: %s", c.Label())
 	}
 
-	if len(args) > len(c.args) {
+	if variadicIndex == -1 && len(args) > len(c.args) {
 		c.PrintHelp()
 		return nil, fmt.Errorf("too many arguments for command: %s", c.Label())
 	}
@@ -215,6 +225,26 @@ func (c *executableCommand) parseAndValidateArgs(args []string) (*ValidatedArgs,
 	}
 
 	for i, arg := range c.args {
+		if arg.IsVariadic() {
+			variadicValues := []interface{}{}
+			for j := i; j < len(args); j++ {
+				rawValue := args[j]
+				parsedValue, err := parseValue(rawValue, arg.Expected())
+
+				if err != nil {
+					return nil, fmt.Errorf("invalid value for variadic argument '%s' at position %d: %v", arg.Label(), j-i, err)
+				}
+
+				if err := arg.validate(parsedValue); err != nil {
+					return nil, fmt.Errorf("validation failed for variadic argument '%s' at position %d: %v", arg.Label(), j-i, err)
+				}
+
+				variadicValues = append(variadicValues, parsedValue)
+			}
+			validatedArgs.setVariadic(arg.Label(), variadicValues)
+			break
+		}
+
 		if i >= len(args) {
 			if !arg.IsOptional() {
 				return nil, fmt.Errorf("missing required argument: %s", arg.Label())
