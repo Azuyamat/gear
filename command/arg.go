@@ -67,51 +67,51 @@ func (a arg) ExtendValidators(validators ...validator) arg {
 	return a
 }
 
-type typedArg[T any] struct {
+type TypedArg[T any] struct {
 	arg
 }
 
-func (a typedArg[T]) ExtendValidators(validators ...func(T) error) typedArg[T] {
+func (a TypedArg[T]) ExtendValidators(validators ...func(T) error) TypedArg[T] {
 	for _, v := range validators {
 		a.arg.validators = append(a.arg.validators, toValidator(v))
 	}
 	return a
 }
 
-func (a typedArg[T]) AsOptional() typedArg[T] {
+func (a TypedArg[T]) AsOptional() TypedArg[T] {
 	a.arg.optional = true
 	return a
 }
 
-func (a typedArg[T]) AsVariadic() typedArg[T] {
+func (a TypedArg[T]) AsVariadic() TypedArg[T] {
 	a.arg.variadic = true
 	return a
 }
 
-func (a typedArg[T]) toArg() arg {
+func (a TypedArg[T]) toArg() arg {
 	return a.arg
 }
 
-func NewStringArg(label string, description string) typedArg[string] {
-	return typedArg[string]{
+func NewStringArg(label string, description string) TypedArg[string] {
+	return TypedArg[string]{
 		arg: NewArg(label, description, ValueTypeString, validateString),
 	}
 }
 
-func NewIntArg(label string, description string) typedArg[int] {
-	return typedArg[int]{
+func NewIntArg(label string, description string) TypedArg[int] {
+	return TypedArg[int]{
 		arg: NewArg(label, description, ValueTypeInt, validateInt),
 	}
 }
 
-func NewFloatArg(label string, description string) typedArg[float64] {
-	return typedArg[float64]{
+func NewFloatArg(label string, description string) TypedArg[float64] {
+	return TypedArg[float64]{
 		arg: NewArg(label, description, ValueTypeFloat, validateFloat),
 	}
 }
 
-func NewBoolArg(label string, description string) typedArg[bool] {
-	return typedArg[bool]{
+func NewBoolArg(label string, description string) TypedArg[bool] {
+	return TypedArg[bool]{
 		arg: NewArg(label, description, ValueTypeBool, validateBool),
 	}
 }
