@@ -1,278 +1,206 @@
 package command
 
 import (
-	stdcontext "context"
+	"errors"
 	"fmt"
+	"slices"
+	"strings"
 )
 
-type executableCommand struct {
+// ExecutableCommand is a command that runs a handler.
+type ExecutableCommand struct {
 	*baseCommand
 
-	handler            handler
-	args               []Arg
-	flags              []Flag
-	cachedValidatedArgs *ValidatedArgs
+	handler   HandlerFunc
+	args      []Arg
+	flags     []Flag
+	exclusive [][]string
 }
 
-var defaultExecutableCommandHandler = func(ctx *Context, args ValidatedArgs) error {
-	return fmt.Errorf("no handler defined for command: %s", ctx.command.Label())
+func defaultHandler(ctx *Context, _ ValidatedArgs) error {
+	return fmt.Errorf("no handler defined for command %q", ctx.Path())
 }
 
-func NewExecutableCommand(label, description string) *executableCommand {
-	return &executableCommand{
+// NewExecutableCommand creates a command that runs a handler, set with
+// Handler.
+func NewExecutableCommand(label, description string) *ExecutableCommand {
+	return &ExecutableCommand{
 		baseCommand: newBaseCommand(label, description),
-		handler:     defaultExecutableCommandHandler,
-		args:        []Arg{},
-		flags:       []Flag{},
+		handler:     defaultHandler,
 	}
 }
 
-func (c *executableCommand) Handler(handler handler) *executableCommand {
+// Handler sets the function the command runs.
+func (c *ExecutableCommand) Handler(handler HandlerFunc) *ExecutableCommand {
 	c.handler = handler
 	return c
 }
 
-func (c *executableCommand) Args(args ...Arg) *executableCommand {
-	c.args = args
+// Args adds positional arguments, in order. It panics if they break the
+// rules: one variadic argument at most, and only last, and no required
+// argument after an optional one.
+func (c *ExecutableCommand) Args(args ...Arg) *ExecutableCommand {
+	c.args = append(c.args, args...)
+	if err := checkArgs(c.args); err != nil {
+		mustNot(fmt.Errorf("command %q: %w", c.label, err))
+	}
 	return c
 }
 
-func (c *executableCommand) Flags(flags ...Flag) *executableCommand {
-	c.flags = flags
-	return c
-}
-
-func (c *executableCommand) execute(ctx *Context, args ValidatedArgs) error {
-	return c.handler(ctx, args)
-}
-
-func (c *executableCommand) run(args []string) error {
-	ctx := newContext(stdcontext.Background(), c)
-	positionalArgs, err := c.separateFlagsFromArgs(args)
-	if err != nil {
-		return err
-	}
-	validatedArgs, err := c.parseAndValidateArgs(positionalArgs)
-	if err != nil {
-		return err
-	}
-	return c.execute(ctx, *validatedArgs)
-}
-
-
-type flagMaps struct {
-	byName      map[string]Flag
-	byShorthand map[string]Flag
-}
-
-func (c *executableCommand) buildFlagMaps() flagMaps {
-	flagMap := make(map[string]Flag)
-	shorthandMap := make(map[string]Flag)
-
-	for i := range c.flags {
-		f := c.flags[i]
-		flagMap[f.Name()] = f
-		if f.Shorthand() != "" {
-			shorthandMap[f.Shorthand()] = f
-		}
-	}
-
-	return flagMaps{byName: flagMap, byShorthand: shorthandMap}
-}
-
-func (c *executableCommand) setDefaultFlagValues(validatedArgs *ValidatedArgs) {
-	for _, f := range c.flags {
-		if f.DefaultValue() != nil {
-			validatedArgs.setFlag(f.Name(), f.DefaultValue())
-		}
-	}
-}
-
-func splitFlagNameValue(flagStr string) (name string, value string, hasValue bool) {
-	for i, ch := range flagStr {
-		if ch == '=' {
-			return flagStr[:i], flagStr[i+1:], true
-		}
-	}
-	return flagStr, "", false
-}
-
-func (c *executableCommand) parseSingleFlag(f Flag, value string, hasExplicitValue bool, args []string, currentIndex int) (parsedValue interface{}, newIndex int, err error) {
-	flagValue := value
-	nextIndex := currentIndex
-
-	if f.Expected() == ValueTypeBool && !hasExplicitValue {
-		flagValue = ""
-	} else if !hasExplicitValue {
-		if currentIndex+1 >= len(args) {
-			return nil, currentIndex, fmt.Errorf("flag --%s requires a value", f.Name())
-		}
-		nextIndex++
-		flagValue = args[nextIndex]
-	}
-
-	parsedValue, err = parseValue(flagValue, f.Expected())
-	if err != nil {
-		return nil, currentIndex, fmt.Errorf("invalid value for flag '%s': %v", f.Name(), err)
-	}
-
-	if err := f.validate(parsedValue); err != nil {
-		return nil, currentIndex, fmt.Errorf("validation failed for flag '%s': %v", f.Name(), err)
-	}
-
-	return parsedValue, nextIndex, nil
-}
-
-func (c *executableCommand) separateFlagsFromArgs(args []string) ([]string, error) {
-	validatedArgs := newValidatedArgs()
-	positionalArgs := []string{}
-
-	maps := c.buildFlagMaps()
-	c.setDefaultFlagValues(validatedArgs)
-
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-
-		if arg == "--" {
-			positionalArgs = append(positionalArgs, args[i+1:]...)
-			break
-		}
-
-		if len(arg) > 2 && arg[0:2] == "--" {
-			flagName, flagValue, hasValue := splitFlagNameValue(arg[2:])
-
-			if flagName == "help" {
-				c.PrintHelp()
-				return nil, fmt.Errorf("")
-			}
-
-			f, ok := maps.byName[flagName]
-			if !ok {
-				return nil, fmt.Errorf("unknown flag: --%s", flagName)
-			}
-
-			parsedValue, newIndex, err := c.parseSingleFlag(f, flagValue, hasValue, args, i)
-			if err != nil {
-				return nil, err
-			}
-
-			validatedArgs.setFlag(f.Name(), parsedValue)
-			i = newIndex
-			continue
-		}
-
-		if len(arg) > 1 && arg[0] == '-' && arg[1] != '-' {
-			shorthand, flagValue, hasValue := splitFlagNameValue(arg[1:])
-
-			if shorthand == "h" {
-				c.PrintHelp()
-				return nil, fmt.Errorf("")
-			}
-
-			f, ok := maps.byShorthand[shorthand]
-			if !ok {
-				return nil, fmt.Errorf("unknown flag: -%s", shorthand)
-			}
-
-			parsedValue, newIndex, err := c.parseSingleFlag(f, flagValue, hasValue, args, i)
-			if err != nil {
-				return nil, err
-			}
-
-			validatedArgs.setFlag(f.Name(), parsedValue)
-			i = newIndex
-			continue
-		}
-
-		positionalArgs = append(positionalArgs, arg)
-	}
-
-	c.cachedValidatedArgs = validatedArgs
-	return positionalArgs, nil
-}
-
-func (c *executableCommand) parseAndValidateArgs(args []string) (*ValidatedArgs, error) {
-	requiredCount := 0
-	variadicIndex := -1
-	for i, arg := range c.args {
-		if !arg.IsOptional() {
-			requiredCount++
-		}
-		if arg.IsVariadic() {
-			if variadicIndex != -1 {
-				return nil, fmt.Errorf("multiple variadic arguments not allowed")
-			}
-			if i != len(c.args)-1 {
-				return nil, fmt.Errorf("variadic argument must be the last argument")
-			}
-			variadicIndex = i
-		}
-	}
-
-	if len(args) < requiredCount {
-		c.PrintHelp()
-		return nil, fmt.Errorf("not enough arguments for command: %s", c.Label())
-	}
-
-	if variadicIndex == -1 && len(args) > len(c.args) {
-		c.PrintHelp()
-		return nil, fmt.Errorf("too many arguments for command: %s", c.Label())
-	}
-
-	validatedArgs := c.cachedValidatedArgs
-	if validatedArgs == nil {
-		validatedArgs = newValidatedArgs()
-	}
-
-	for i, arg := range c.args {
-		if arg.IsVariadic() {
-			variadicValues := []interface{}{}
-			for j := i; j < len(args); j++ {
-				rawValue := args[j]
-				parsedValue, err := parseValue(rawValue, arg.Expected())
-
-				if err != nil {
-					return nil, fmt.Errorf("invalid value for variadic argument '%s' at position %d: %v", arg.Label(), j-i, err)
-				}
-
-				if err := arg.validate(parsedValue); err != nil {
-					return nil, fmt.Errorf("validation failed for variadic argument '%s' at position %d: %v", arg.Label(), j-i, err)
-				}
-
-				variadicValues = append(variadicValues, parsedValue)
-			}
-			validatedArgs.setVariadic(arg.Label(), variadicValues)
-			break
-		}
-
-		if i >= len(args) {
-			if !arg.IsOptional() {
-				return nil, fmt.Errorf("missing required argument: %s", arg.Label())
-			}
-			continue
-		}
-
-		rawValue := args[i]
-		parsedValue, err := parseValue(rawValue, arg.Expected())
-
-		if err != nil {
-			return nil, fmt.Errorf("invalid value for argument '%s': %v", arg.Label(), err)
-		}
-
-		if err := arg.validate(parsedValue); err != nil {
-			return nil, fmt.Errorf("validation failed for argument '%s': %v", arg.Label(), err)
-		}
-
-		validatedArgs.set(arg.Label(), parsedValue)
-	}
-	return validatedArgs, nil
-}
-
-func (c *executableCommand) PrintHelp() {
-	printer := newHelpPrinter()
-	printer.PrintExecutableCommandHelp(c)
-}
-
-func (c *executableCommand) inheritGlobalFlags(flags []Flag) {
+// Flags adds flags. It panics if two flags share a name or shorthand.
+func (c *ExecutableCommand) Flags(flags ...Flag) *ExecutableCommand {
 	c.flags = append(c.flags, flags...)
+	if _, err := newFlagSet(c.flags, nil, nil); err != nil {
+		mustNot(fmt.Errorf("command %q: %w", c.label, err))
+	}
+	return c
+}
+
+// MutuallyExclusive makes it an error to set more than one of the named
+// flags. Call it once for each such group.
+func (c *ExecutableCommand) MutuallyExclusive(names ...string) *ExecutableCommand {
+	c.exclusive = append(c.exclusive, slices.Clone(names))
+	return c
+}
+
+// Long sets a longer description, shown at the top of the command's own help
+// in place of the one-line description. Line breaks are kept, and lines are
+// wrapped to fit the terminal.
+func (c *ExecutableCommand) Long(text string) *ExecutableCommand {
+	c.long = text
+	return c
+}
+
+// Example adds examples to the command's help, shown as written. An example
+// can span several lines, for instance a comment and then the command.
+func (c *ExecutableCommand) Example(examples ...string) *ExecutableCommand {
+	c.examples = append(c.examples, examples...)
+	return c
+}
+
+// Group puts the command under a titled section in its parent's help, such as
+// "Setup commands". Sections appear in the order their first command was
+// added; ungrouped commands come last.
+func (c *ExecutableCommand) Group(title string) *ExecutableCommand {
+	c.groupTitle = title
+	return c
+}
+
+// Aliases adds other names the command can be run by.
+func (c *ExecutableCommand) Aliases(aliases ...string) *ExecutableCommand {
+	c.aliases = append(c.aliases, aliases...)
+	return c
+}
+
+// Hidden leaves the command out of help, suggestions and completions. It
+// still runs.
+func (c *ExecutableCommand) Hidden() *ExecutableCommand {
+	c.hidden = true
+	return c
+}
+
+// Deprecated hides the command like Hidden, and prints message as a warning
+// whenever it runs.
+func (c *ExecutableCommand) Deprecated(message string) *ExecutableCommand {
+	c.deprecated = message
+	return c
+}
+
+func (c *ExecutableCommand) subcommands() *group { return nil }
+
+func (c *ExecutableCommand) check(path string, global []Flag) error {
+	if err := checkArgs(c.args); err != nil {
+		return fmt.Errorf("command %q: %w", path, err)
+	}
+	fs, err := newFlagSet(c.flags, global, c.exclusive)
+	if err == nil {
+		err = fs.checkRefs()
+	}
+	if err != nil {
+		return fmt.Errorf("command %q: %w", path, err)
+	}
+	return nil
+}
+
+func (c *ExecutableCommand) run(inv *invocation, args []string, v *ValidatedArgs) error {
+	return c.execute(inv, args, v, c)
+}
+
+// execute parses args and runs the handler. page is the command whose help
+// and usage are shown, which is the root when c is the root's own handler.
+func (c *ExecutableCommand) execute(inv *invocation, args []string, v *ValidatedArgs, page Command) error {
+	fs := mustFlagSet(c.flags, inv.global, c.exclusive)
+	positional, err := fs.parse(args, v, true)
+	if errors.Is(err, ErrHelp) {
+		inv.printHelp(page)
+		return ErrHelp
+	}
+	if err == nil {
+		err = fs.finish(v)
+	}
+	if err == nil {
+		err = c.bindArgs(positional, v)
+	}
+	if err != nil {
+		return inv.usageError(page, err)
+	}
+
+	err = c.handler(newContext(inv, page), *v)
+	var usage *UsageError
+	if errors.As(err, &usage) && usage.Command == "" {
+		usage.Command = inv.pathString()
+	}
+	return err
+}
+
+func (c *ExecutableCommand) bindArgs(raw []string, v *ValidatedArgs) error {
+	for i, a := range c.args {
+		spec := a.toArg()
+		if spec.variadic {
+			rest := raw[min(i, len(raw)):]
+			if len(rest) == 0 {
+				if !spec.optional {
+					return fmt.Errorf("missing argument <%s>", spec.usageName())
+				}
+				return nil
+			}
+			values := make([]any, len(rest))
+			for j, r := range rest {
+				value, err := spec.parse(r)
+				if err != nil {
+					return err
+				}
+				values[j] = value
+			}
+			v.args[spec.label] = typedSlice(spec.expected, values)
+			return nil
+		}
+		if i >= len(raw) {
+			if !spec.optional {
+				return fmt.Errorf("missing argument <%s>", spec.label)
+			}
+			continue
+		}
+		value, err := spec.parse(raw[i])
+		if err != nil {
+			return err
+		}
+		v.args[spec.label] = value
+	}
+	if len(raw) > len(c.args) {
+		return fmt.Errorf("unexpected argument %q", raw[len(c.args)])
+	}
+	return nil
+}
+
+func (c *ExecutableCommand) usage(inv *invocation) string {
+	parts := []string{inv.pathString()}
+	for _, a := range c.args {
+		parts = append(parts, a.toArg().inUsageLine())
+	}
+	return strings.Join(append(parts, "[flags]"), " ")
+}
+
+func (c *ExecutableCommand) help(inv *invocation) Help {
+	return buildHelp(inv, c.baseCommand, []string{c.usage(inv)}, nil, c.args, c.flags)
 }

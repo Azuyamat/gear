@@ -1,410 +1,135 @@
 # Gear
 
-A lightweight, type-safe command-line interface framework for Go with automatic help generation, argument validation, and hierarchical command structures.
-
-## Installation
+A small, typed command-line framework for Go with no dependencies outside the standard library.
 
 ```bash
 go get github.com/azuyamat/gear
 ```
 
-## Quick Start
-
 ```go
-package main
-
-import (
-    "fmt"
-    "os"
-
-    "github.com/azuyamat/gear/command"
-)
-
-func main() {
-    root := command.NewRootCommand("myapp", "A simple CLI application")
-
-    greet := command.NewExecutableCommand("greet", "Greet a user").
-        Args(
-            command.NewStringArg("name", "Name of the person to greet"),
-        ).
+root := command.NewRootCommand("greet", "Greet people").
+    AddChild(command.NewExecutableCommand("greet", "Greet someone by name").
+        Args(command.NewStringArg("name", "Who to greet")).
+        Flags(command.NewBoolFlag("shout", "s", "Greet loudly", false)).
         Handler(func(ctx *command.Context, args command.ValidatedArgs) error {
-            name := args.String("name")
-            fmt.Printf("Hello, %s!\n", name)
+            fmt.Fprintln(ctx.Out(), "Hello,", command.ArgValue[string](args, "name"))
             return nil
-        })
+        }))
 
-    root.AddChild(greet)
-
-    if err := root.Run(os.Args[1:]); err != nil {
-        fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-        os.Exit(1)
-    }
+if err := root.Run(os.Args[1:]); err != nil {
+    fmt.Fprintln(os.Stderr, "Error:", err)
+    os.Exit(command.ExitCode(err)) // 2 for bad input, 1 for other failures
 }
 ```
 
-```bash
-$ myapp greet Alice
-Hello, Alice!
-```
+Runnable programs live in [`examples/`](examples):
 
-## Features
+- [`greet`](examples/greet/main.go): the smallest useful program.
+- [`taskman`](examples/taskman/main.go): subcommands, aliases, command groups, examples, global flags, validators, choices, environment variables, mutually exclusive flags, Ctrl-C cancellation, styled help and shell completion.
 
-- **Type-safe arguments and flags** with automatic parsing and validation
-- **Hierarchical command structure** with root commands, subcommands, and executable commands
-- **Automatic help generation** with `--help` / `-h` flags
-- **Custom validators** for arguments and flags
-- **Global flags** that propagate to child commands
-- **Zero dependencies** - only uses Go standard library
-- **Fluent API** for clean, readable command definitions
+Reference documentation is on [pkg.go.dev](https://pkg.go.dev/github.com/azuyamat/gear/command).
 
-## Core Concepts
+## Commands
 
-### Command Types
+A tree has one `RootCommand`. A `Subcommand` groups commands (`app db migrate`), and an `ExecutableCommand` runs a handler. Help lists commands in the order they were added.
 
-Gear provides three types of commands:
+Executable commands and subcommands can have `Aliases`, can be `Hidden` or `Deprecated(message)`, and can go under a titled section of their parent's help with `Group("Setup")`. Any command can have a `Long` description and `Example`s for its own help page. The root can have a `Version`, and its own `Handler`, `Args` and `Flags` for when no command is named.
 
-#### RootCommand
+`RunContext(ctx, args)` passes `ctx` to handlers through `ctx.Context()`, so `signal.NotifyContext` cancels them on Ctrl-C. `Output(out, err)` redirects what gear prints.
 
-The top-level command that manages child commands.
+## Arguments
 
-```go
-root := command.NewRootCommand("cli", "My CLI application")
-root.AddChild(subcommand1)
-root.AddChild(subcommand2)
-root.Run(os.Args[1:])
-```
+| Constructor | Value |
+|---|---|
+| `NewStringArg` | `string` |
+| `NewIntArg` | `int` (negative numbers work: `app hint -1`) |
+| `NewFloatArg` | `float64` |
+| `NewBoolArg` | `bool` |
+| `NewDurationArg` | `time.Duration` |
 
-#### Subcommand
+Each returns a `TypedArg[T]` with `AsOptional()`, `AsVariadic()`, `Choices(...)` and `ExtendValidators(func(T) error)`. A variadic argument must come last, and a required argument can't follow an optional one.
 
-A command that groups related child commands together.
+Read values with `command.ArgValue[T](args, "label")`. A variadic argument reads as a slice, such as `ArgValue[[]string]`. `args.Has("label")` reports whether the argument was given.
 
-```go
-database := command.NewSubcommand("database", "Database operations")
-database.AddChild(migrateCmd)
-database.AddChild(seedCmd)
+## Flags
 
-root.AddChild(database)
-```
+| Constructor | Value |
+|---|---|
+| `NewStringFlag` | `string` |
+| `NewIntFlag` | `int` |
+| `NewFloatFlag` | `float64` |
+| `NewBoolFlag` | `bool` |
+| `NewDurationFlag` | `time.Duration` |
+| `NewStringsFlag` | `[]string`, collected from repeated use: `-t a -t b` |
 
-#### ExecutableCommand
+Each returns a `TypedFlag[T]` with:
 
-A command that performs an action when invoked.
+- `Choices(...)`: allow only these values
+- `Env("APP_TOKEN")`: read from an environment variable when the flag isn't given
+- `Required()`
+- `Requires("other")`: only valid alongside `--other`
+- `Negatable()`: add `--no-<name>` to a bool flag
+- `ExtendValidators(func(T) error)`
 
-```go
-migrate := command.NewExecutableCommand("migrate", "Run database migrations").
-    Handler(func(ctx *command.Context, args command.ValidatedArgs) error {
-        // Migration logic here
-        return nil
-    })
-```
+`ExecutableCommand.MutuallyExclusive("a", "b")` rejects command lines that set both. `RootCommand.GlobalFlags` adds flags that every command accepts, and they can also go before the command name.
 
-### Arguments
-
-Arguments are positional parameters that come after the command name.
-
-#### Type-Safe Arguments
-
-```go
-cmd := command.NewExecutableCommand("add", "Add two numbers").
-    Args(
-        command.NewIntArg("a", "First number"),
-        command.NewIntArg("b", "Second number"),
-    ).
-    Handler(func(ctx *command.Context, args command.ValidatedArgs) error {
-        a := args.Int("a")
-        b := args.Int("b")
-        fmt.Printf("%d + %d = %d\n", a, b, a+b)
-        return nil
-    })
-```
-
-#### Optional Arguments
-
-```go
-cmd := command.NewExecutableCommand("greet", "Greet someone").
-    Args(
-        command.NewStringArg("name", "Name of the person"),
-        command.NewStringArg("greeting", "Custom greeting").AsOptional(),
-    ).
-    Handler(func(ctx *command.Context, args command.ValidatedArgs) error {
-        name := args.String("name")
-        greeting := args.String("greeting")
-        if greeting == "" {
-            greeting = "Hello"
-        }
-        fmt.Printf("%s, %s!\n", greeting, name)
-        return nil
-    })
-```
-
-#### Custom Validators
-
-```go
-import "fmt"
-
-positiveValidator := func(value int) error {
-    if value <= 0 {
-        return fmt.Errorf("value must be positive")
-    }
-    return nil
-}
-
-cmd := command.NewExecutableCommand("process", "Process items").
-    Args(
-        command.NewIntArg("count", "Number of items").
-            ExtendValidators(positiveValidator),
-    )
-```
-
-### Flags
-
-Flags are named options that can appear anywhere in the command line.
-
-#### Basic Flags
-
-```go
-cmd := command.NewExecutableCommand("serve", "Start the server").
-    Flags(
-        command.NewIntFlag("port", "p", "Port to listen on", 8080),
-        command.NewStringFlag("host", "h", "Host to bind to", "localhost"),
-        command.NewBoolFlag("verbose", "v", "Enable verbose logging", false),
-    ).
-    Handler(func(ctx *command.Context, args command.ValidatedArgs) error {
-        port := args.FlagInt("port")
-        host := args.FlagString("host")
-        verbose := args.FlagBool("verbose")
-
-        fmt.Printf("Starting server on %s:%d (verbose: %v)\n", host, port, verbose)
-        return nil
-    })
-```
-
-Usage examples:
+All of these work:
 
 ```bash
-$ myapp serve --port=3000 --host=0.0.0.0 --verbose
-$ myapp serve -p 3000 -h 0.0.0.0 -v
-$ myapp serve --port=3000  # uses default host and verbose values
+app serve --port=3000 --port 3000 -p 3000 -p=3000 -p3000
+app ls -us            # same as -u -s when both are bool flags
+app new -- --odd-name # everything after -- is positional
 ```
 
-#### Flag Validators
+Read values with `command.FlagValue[T](args, "name")`. `args.Changed("name")` reports whether the flag was set on the command line or from its environment variable, as opposed to left at its default.
+
+## Help and errors
+
+Every command understands `--help`, and also `-h` unless one of its flags uses `-h`. Groups also understand `help <command>`. Help shows the full command path, a usage line built from the arguments, and global flags in their own section.
+
+Bad input, such as an unknown command or flag, a missing argument or an invalid value, returns a `*UsageError`. Gear prints a short usage hint to stderr, and suggests the nearest match for typos. A handler can return its own with `command.UsageErrorf`. `command.ExitCode(err)` maps errors to the usual exit statuses.
+
+### Customizing help
+
+Help wraps to `$COLUMNS` (or 80 columns). `RootCommand.HelpStyle` takes hooks that style each part of a page, plus a fixed `Width`. Each hook is a plain `func(string) string`, so a lipgloss `Style.Render` fits without gear depending on it. Columns are lined up and wrapped before styling, so escape codes don't break the layout.
 
 ```go
-portValidator := func(value int) error {
-    if value < 1024 || value > 65535 {
-        return fmt.Errorf("port must be between 1024 and 65535")
-    }
-    return nil
-}
-
-cmd := command.NewExecutableCommand("serve", "Start server").
-    Flags(
-        command.NewIntFlag("port", "p", "Server port", 8080).
-            ExtendValidators(portValidator),
-    )
+root.HelpStyle(command.HelpStyle{
+    Heading: headingStyle.Render,
+    Flag:    flagStyle.Render,
+    Note:    dimStyle.Render, // defaults, $ENV, choices
+})
 ```
 
-#### Global Flags
+For full control, `RootCommand.HelpFunc` gets each page as a `command.Help` value with every section broken out. Draw it yourself, or change it and pass it to `command.WriteHelp`. `root.HelpFor("db", "migrate")` and `ctx.Help()` return the same value outside of `--help`, for example to generate docs.
 
-Global flags are inherited by all child commands.
+Mistakes in how the tree is built panic: duplicate names, clashing flags, or misordered arguments. The builder method panics if it can see the problem; otherwise the first run does. Either way, the developer sees it the first time the program runs, whatever command they try.
+
+## Shell completion
 
 ```go
-root := command.NewRootCommand("cli", "My application").
-    GlobalFlags(
-        command.NewBoolFlag("debug", "d", "Enable debug mode", false),
-        command.NewStringFlag("config", "c", "Config file path", "config.yaml"),
-    )
-
-cmd := command.NewExecutableCommand("run", "Run the application").
-    Handler(func(ctx *command.Context, args command.ValidatedArgs) error {
-        debug := args.FlagBool("debug")
-        config := args.FlagString("config")
-        fmt.Printf("Debug: %v, Config: %s\n", debug, config)
-        return nil
-    })
-
-root.AddChild(cmd)
+root.AddChild(root.CompletionCommand())
 ```
 
 ```bash
-$ myapp run --debug --config=custom.yaml
-Debug: true, Config: custom.yaml
+source <(app completion bash)   # or zsh
+app completion fish | source
 ```
 
-### Supported Types
-
-Gear supports four built-in value types:
-
-| Type | Constructor | Accessor Methods |
-|------|-------------|------------------|
-| String | `NewStringArg` / `NewStringFlag` | `String()` / `GetString()` / `FlagString()` / `GetFlagString()` |
-| Int | `NewIntArg` / `NewIntFlag` | `Int()` / `GetInt()` / `FlagInt()` / `GetFlagInt()` |
-| Float | `NewFloatArg` / `NewFloatFlag` | `Float()` / `GetFloat()` / `FlagFloat()` / `GetFlagFloat()` |
-| Bool | `NewBoolArg` / `NewBoolFlag` | `Bool()` / `GetBool()` / `FlagBool()` / `GetFlagBool()` |
-
-Each type has:
-- Safe accessor (e.g., `GetString()`) - returns value and error
-- Unsafe accessor (e.g., `String()`) - returns value only, error ignored
-
-## Complete Example
+The scripts ask the program what to suggest, through a hidden `__complete` command, so completion always matches the command tree. It covers command names, flags, choices, and values from `Complete` functions on arguments and flags:
 
 ```go
-package main
-
-import (
-    "fmt"
-    "os"
-
-    "github.com/azuyamat/gear/command"
-)
-
-func main() {
-    root := command.NewRootCommand("taskman", "Task management CLI").
-        GlobalFlags(
-            command.NewBoolFlag("verbose", "v", "Enable verbose output", false),
-        )
-
-    list := command.NewExecutableCommand("list", "List all tasks").
-        Handler(func(ctx *command.Context, args command.ValidatedArgs) error {
-            verbose := args.FlagBool("verbose")
-            if verbose {
-                fmt.Println("Listing all tasks (verbose mode)...")
-            }
-            fmt.Println("- Task 1")
-            fmt.Println("- Task 2")
-            return nil
-        })
-
-    add := command.NewExecutableCommand("add", "Add a new task").
-        Args(
-            command.NewStringArg("name", "Task name"),
-            command.NewIntArg("priority", "Task priority (1-5)").
-                ExtendValidators(func(value int) error {
-                    if value < 1 || value > 5 {
-                        return fmt.Errorf("priority must be between 1 and 5")
-                    }
-                    return nil
-                }),
-        ).
-        Flags(
-            command.NewStringFlag("tag", "t", "Task tag", ""),
-        ).
-        Handler(func(ctx *command.Context, args command.ValidatedArgs) error {
-            name := args.String("name")
-            priority := args.Int("priority")
-            tag := args.FlagString("tag")
-
-            fmt.Printf("Adding task: %s (priority: %d", name, priority)
-            if tag != "" {
-                fmt.Printf(", tag: %s", tag)
-            }
-            fmt.Println(")")
-            return nil
-        })
-
-    database := command.NewSubcommand("db", "Database operations")
-
-    migrate := command.NewExecutableCommand("migrate", "Run database migrations").
-        Handler(func(ctx *command.Context, args command.ValidatedArgs) error {
-            fmt.Println("Running migrations...")
-            return nil
-        })
-
-    database.AddChild(migrate)
-
-    root.AddChild(list)
-    root.AddChild(add)
-    root.AddChild(database)
-
-    if err := root.Run(os.Args[1:]); err != nil {
-        if err.Error() != "" {
-            fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-            os.Exit(1)
-        }
-    }
-}
+command.NewStringArg("template", "Template to use").
+    Complete(func(ctx *command.Context, args command.ValidatedArgs, prefix string) []string {
+        return listTemplates() // "name\tdescription" adds a description in zsh and fish
+    })
 ```
 
-Usage:
+A `Complete` function sees the flags and arguments typed before the value. Where there's nothing to suggest, the shell completes file names. `root.WriteCompletion(w, shell)` writes a script directly.
 
-```bash
-$ taskman list
-- Task 1
-- Task 2
+## Notes
 
-$ taskman list --verbose
-Listing all tasks (verbose mode)...
-- Task 1
-- Task 2
-
-$ taskman add "Write documentation" 3 --tag=docs
-Adding task: Write documentation (priority: 3, tag: docs)
-
-$ taskman add "Invalid priority" 10
-Error: validation failed for argument 'priority': priority must be between 1 and 5
-
-$ taskman db migrate
-Running migrations...
-
-$ taskman --help
-# Displays auto-generated help for all commands
-```
-
-## API Reference
-
-### Command Creation
-
-```go
-command.NewRootCommand(label, description string) *RootCommand
-command.NewSubcommand(label, description string) *Subcommand
-command.NewExecutableCommand(label, description string) *ExecutableCommand
-```
-
-### Argument Creation
-
-```go
-command.NewStringArg(label, description string) typedArg[string]
-command.NewIntArg(label, description string) typedArg[int]
-command.NewFloatArg(label, description string) typedArg[float64]
-command.NewBoolArg(label, description string) typedArg[bool]
-```
-
-### Flag Creation
-
-```go
-command.NewStringFlag(name, shorthand, description string, defaultValue string) typedFlag[string]
-command.NewIntFlag(name, shorthand, description string, defaultValue int) typedFlag[int]
-command.NewFloatFlag(name, shorthand, description string, defaultValue float64) typedFlag[float64]
-command.NewBoolFlag(name, shorthand, description string, defaultValue bool) typedFlag[bool]
-```
-
-### ValidatedArgs Methods
-
-```go
-// Arguments
-Get(name string) interface{}
-Has(name string) bool
-String(name string) string
-GetString(name string) (string, error)
-Int(name string) int
-GetInt(name string) (int, error)
-Float(name string) float64
-GetFloat(name string) (float64, error)
-Bool(name string) bool
-GetBool(name string) (bool, error)
-
-// Flags
-GetFlag(name string) interface{}
-HasFlag(name string) bool
-FlagString(name string) string
-GetFlagString(name string) (string, error)
-FlagInt(name string) int
-GetFlagInt(name string) (int, error)
-FlagFloat(name string) float64
-GetFlagFloat(name string) (float64, error)
-FlagBool(name string) bool
-GetFlagBool(name string) (bool, error)
-```
+`Command` has unexported methods, so it can only be one of the three types above. Commands keep no state between runs, so a tree can be run repeatedly or from several goroutines.
 
 ## License
 
